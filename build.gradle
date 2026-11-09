@@ -1,0 +1,40 @@
+// Gradle build for the DUBJUG webapp.
+//
+// NOTE: Maven (pom.xml) is the build of record for this demo. The Maven build
+// runs com.dubjug.security:security-check-maven-plugin, which has no Gradle
+// equivalent, so this Gradle build does NOT perform that audit. It exists so
+// the project can be built and tested with Gradle but is not used by the demo.
+
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '3.5.6'
+    id 'io.spring.dependency-management' version '1.1.7'
+}
+
+group = 'com.dubjug.webapp'
+version = '0.0.1-SNAPSHOT'
+description = 'Internal Spring Boot service for DUBJUG.'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 17
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}

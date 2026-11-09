@@ -1,0 +1,113 @@
+# Reproducible Docker Sandbox environment for the DUBJUG webapp.
+# Codex authenticates separately through its browser OAuth flow.
+#
+# This is a v3 kit composition: the published sbx-kit-codex workload replaces
+# the built-in `codex` shortcut, and every mixin is a v3 kit. v2 and v3 kits
+# cannot be mixed in one sandbox.
+#
+# MCP servers reach the agent only through the host's sandbox MCP gateway
+# (see docs/mcp-gateway-architecture.md). The sbx-kit-codex workload writes a
+# single `mcp-gateway` entry into ~/.codex/config.toml; nothing in this
+# sandbox names an MCP server, holds an MCP credential, or has a network rule
+# for mcp.notion.com or mcp.atlassian.com, so the direct path is blocked.
+#
+#  * Notion: `mcp.servers` below registers it on the host gateway and attaches
+#    it to this sandbox. `mcp.servers` does not run OAuth consent, so a
+#    postCreate host command opens the Notion sign-in in the developer's
+#    browser when it is still needed. Tokens stay in the host OS credential
+#    store.
+#  * Atlassian: registered and attached by postCreate host commands with a
+#    header placeholder, because `mcp.servers` has no header field. The
+#    developer stores their scoped "Atlassian MCP V2" API token once per
+#    machine, ideally before the first run:
+#      sbx secret set mcp:atlassian:auth -t "Basic $(printf '%s' 'you@example.com:API_TOKEN' | base64 | tr -d '\n')"
+#    The host commands run only when the sandbox is created, so the plan
+#    asks for approval then, not on every `sbx env run`.
+#  * dataserver: the local data-analysis MCP server (Streamable HTTP on the
+#    developer's own machine, http://127.0.0.1:8000/mcp, Bearer token). Same
+#    path-B pattern as Atlassian: postCreate register-if-missing with a header
+#    placeholder bound to the host secret, then attach. One-time setup, with
+#    the server running:
+#      sbx secret set mcp:dataserver:auth -t "Bearer <token>"
+#    If the server is down at create, the commands warn instead of failing;
+#    attach later with: sbx mcp load dataserver --sandbox dubjug-webapp
+#    (then start a new agent session).
+#
+# The three context kits carry the agent rules only. The previous direct-path
+# kit, dubjug-atlassian-mcp-kit:1.3.1, stays published but is no longer used.
+schemaVersion: "1"
+name: dubjug-webapp
+agent: sbx-kit-codex
+workspace: .
+
+ports:
+  - sandbox: 8080
+    host: 8080
+
+kits:
+  - docker.io/docker/sbx-kit-codex:0.162.1
+  - docker.io/sbx/gitlab:1.118.0
+  - docker.io/sbx/gitlab-ssh:1.0.0
+  - docker.io/sbx/codex-acp:1.1.0
+  - docker.io/jfeeneydemo3/dubjug-java-kit:1.2.2
+  - source: docker.io/jfeeneydemo3/dubjug-atlassian-context-kit:1.0.0
+    args:
+      site: your-site.atlassian.net
+  - docker.io/jfeeneydemo3/dubjug-notion-context-kit:1.0.1
+  - docker.io/jfeeneydemo3/dubjug-dataserver-context-kit:1.0.0
+
+mcp:
+  servers:
+    - name: notion
+      url: https://mcp.notion.com/mcp
+    # No `atlassian` entry: the lifecycle host commands own that registration.
+
+lifecycle:
+  # Everything runs at postCreate, i.e. only when the sandbox is created.
+  # `initialize` would run on every `sbx env run`, and a plan that runs host
+  # commands asks for approval each time; postCreate-only plans leave later
+  # runs with nothing to run on the host.
+  postCreate:
+    # Idempotent: register Atlassian with a header placeholder unless this
+    # machine already has a registration of that name. `${auth}` is a literal
+    # for sbx (single-quoted so the host shell leaves it alone); it resolves to
+    # the host secret mcp:atlassian:auth.
+    - name: Register the Atlassian MCP server on the host gateway
+      command: >-
+        sbx mcp ls --json | grep -Eq '"name": *"atlassian"' ||
+        sbx mcp add atlassian --url https://mcp.atlassian.com/v2/mcp
+        --header 'Authorization: ${auth}' --no-input
+      timeout: 2m
+    - name: Attach the Atlassian MCP server to this sandbox
+      command: sbx mcp load atlassian --sandbox "$SBX_SANDBOX_NAME"
+      timeout: 1m
+    # `mcp.servers` registers Notion without running OAuth consent. Sign in on
+    # the host, in the developer's browser, only when Notion still needs it
+    # (status "needs-auth" in `sbx mcp ls --json`). Declining or timing out
+    # leaves Notion unavailable but does not fail the create.
+    - name: Sign in to Notion in your browser (only if needed)
+      command: >-
+        if sbx mcp ls --json | grep -A4 '"name": *"notion"' | grep -q '"needs-auth"';
+        then sbx mcp auth notion ||
+        echo "Notion sign-in did not complete; run: sbx mcp auth notion";
+        else echo "Notion already authorized"; fi
+      timeout: 5m
+    # The local data-analysis server, same pattern as Atlassian. Registration
+    # probes the endpoint, so the server must be running; if it is not, warn
+    # and continue rather than fail the create. --skip-ssrf-check is required
+    # for a loopback URL. \$ keeps the shell from expanding the hint text.
+    - name: Register the local data-analysis MCP server on the host gateway
+      command: >-
+        sbx mcp ls --json | grep -Eq '"name": *"dataserver"' ||
+        sbx mcp add dataserver --url http://127.0.0.1:8000/mcp
+        --header 'Authorization: ${auth}' --no-input --skip-ssrf-check ||
+        echo "dataserver not registered (is it running on 127.0.0.1:8000?);
+        start it, then run: sbx mcp add dataserver --url http://127.0.0.1:8000/mcp
+        --header 'Authorization: \${auth}' --no-input --skip-ssrf-check"
+      timeout: 2m
+    - name: Attach the local data-analysis MCP server to this sandbox
+      command: >-
+        sbx mcp load dataserver --sandbox "$SBX_SANDBOX_NAME" ||
+        echo "dataserver not attached; after registering it run:
+        sbx mcp load dataserver --sandbox $SBX_SANDBOX_NAME (then start a new agent session)"
+      timeout: 1m
